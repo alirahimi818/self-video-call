@@ -76,6 +76,14 @@ export function useCall(roomId, forceRelay) {
 
     signaling.events.addEventListener('peer-left', () => {
       peerStatus.value = 'peer-left';
+      // Whatever local offer we might end up holding while alone (e.g. from
+      // our own ICE-restart attempt after the disconnect) is addressed to
+      // nobody. Force polite so that when someone rejoins with a fresh
+      // offer, we accept it (rolling back our stale one) instead of
+      // ignoring it — otherwise, if this side happened to be impolite,
+      // it would ignore the rejoining peer's offer forever and both sides
+      // would stay stuck until a manual refresh.
+      polite = true;
     });
 
     signaling.events.addEventListener('peer-joined', () => {
