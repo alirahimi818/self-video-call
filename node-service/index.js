@@ -69,7 +69,18 @@ wss.on('connection', (ws, req) => {
 
   const room = createRoom(roomId);
 
+  // A flaky connection can leave a socket in room.peers whose underlying
+  // connection is already gone but hasn't been caught by the 30s heartbeat
+  // yet. Prune those before deciding the room is full, so a real reconnect
+  // isn't rejected because of its own stale previous socket.
+  for (const peer of room.peers) {
+    if (peer.readyState !== peer.OPEN) {
+      room.peers.delete(peer);
+    }
+  }
+
   if (room.peers.size >= 2) {
+    console.log(`[room ${roomId}] rejected: full`);
     ws.close(4001, 'room full');
     return;
   }
@@ -77,6 +88,7 @@ wss.on('connection', (ws, req) => {
   room.peers.add(ws);
   ws.isAlive = true;
   ws.roomId = roomId;
+  console.log(`[room ${roomId}] peer joined (${room.peers.size}/2)`);
 
   ws.on('pong', () => {
     ws.isAlive = true;
@@ -101,6 +113,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     room.peers.delete(ws);
+    console.log(`[room ${roomId}] peer left (${room.peers.size}/2)`);
     for (const peer of room.peers) {
       if (peer.readyState === peer.OPEN) {
         peer.send(JSON.stringify({ type: 'peer-left' }));
