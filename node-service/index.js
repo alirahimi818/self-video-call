@@ -19,6 +19,14 @@ if (!TURN_HOST) {
   throw new Error('TURN_HOST env var is required');
 }
 
+// Caddy's reverse_proxy sets X-Forwarded-For by default; fall back to the
+// raw socket address for direct connections (e.g. local testing).
+function getClientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (xff) return xff.split(',')[0].trim();
+  return req.socket.remoteAddress;
+}
+
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -82,7 +90,12 @@ async function handleApi(req, res, pathname) {
     } catch {
       return sendJson(res, 400, { error: 'invalid body' });
     }
-    appendDebugLog({ roomId, ...body });
+    appendDebugLog({
+      roomId,
+      clientIp: getClientIp(req),
+      userAgentHeader: req.headers['user-agent'],
+      ...body,
+    });
     res.writeHead(204);
     return res.end();
   }
@@ -134,7 +147,8 @@ wss.on('connection', (ws, req) => {
   room.peers.add(ws);
   ws.isAlive = true;
   ws.roomId = roomId;
-  console.log(`[room ${roomId}] peer joined (${room.peers.size}/2)`);
+  ws.clientIp = getClientIp(req);
+  console.log(`[room ${roomId}] peer joined (${room.peers.size}/2) ip=${ws.clientIp}`);
 
   ws.on('pong', () => {
     ws.isAlive = true;
@@ -164,7 +178,7 @@ wss.on('connection', (ws, req) => {
     // client-initiated close (1000/1001) — useful to tell apart when
     // diagnosing connection instability.
     console.log(
-      `[room ${roomId}] peer left (${room.peers.size}/2) code=${code} reason=${reason?.toString() || ''}`,
+      `[room ${roomId}] peer left (${room.peers.size}/2) ip=${ws.clientIp} code=${code} reason=${reason?.toString() || ''}`,
     );
     for (const peer of room.peers) {
       if (peer.readyState === peer.OPEN) {

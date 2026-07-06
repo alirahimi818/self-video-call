@@ -40,7 +40,17 @@ export function useCall(roomId) {
   const isMuted = ref(false);
   const isCameraOff = ref(false);
   const wsReconnectAttempt = ref(0);
-  const stats = ref({ candidateType: null, protocol: null, outboundKbps: 0, inboundKbps: 0, packetLoss: null, rtt: null });
+  const stats = ref({
+    candidateType: null,
+    protocol: null,
+    remoteCandidateType: null,
+    remoteProtocol: null,
+    outboundKbps: 0,
+    inboundKbps: 0,
+    packetLoss: null,
+    audioPacketLoss: null,
+    rtt: null,
+  });
 
   // Identifies all log lines from this one page load/session, so entries
   // from the two peers (interleaved in the same room's log) and across
@@ -335,6 +345,7 @@ export function useCall(roomId) {
       let outboundKbps = 0;
       let inboundKbps = 0;
       let packetLoss = null;
+      let audioPacketLoss = null;
       report.forEach((entry) => {
         if (entry.type === 'outbound-rtp' && entry.kind === 'video') {
           if (lastStats?.outbound) {
@@ -356,14 +367,25 @@ export function useCall(roomId) {
           }
           lastStats = { ...lastStats, inbound: entry };
         }
+        // Audio is the priority to keep alive even when video degrades —
+        // track its loss separately so a bad-but-audio-only call is visible.
+        if (entry.type === 'inbound-rtp' && entry.kind === 'audio') {
+          if (entry.packetsLost != null && entry.packetsReceived != null) {
+            const total = entry.packetsLost + entry.packetsReceived;
+            audioPacketLoss = total > 0 ? Math.round((entry.packetsLost / total) * 1000) / 10 : 0;
+          }
+        }
       });
 
       stats.value = {
         candidateType: localCandidate?.candidateType ?? null,
         protocol: localCandidate?.protocol ?? null,
+        remoteCandidateType: remoteCandidate?.candidateType ?? null,
+        remoteProtocol: remoteCandidate?.protocol ?? null,
         outboundKbps,
         inboundKbps,
         packetLoss,
+        audioPacketLoss,
         rtt: activePair.currentRoundTripTime != null ? Math.round(activePair.currentRoundTripTime * 1000) : null,
       };
     }, STATS_INTERVAL_MS);
@@ -381,8 +403,12 @@ export function useCall(roomId) {
         sessionId,
         peerStatus: peerStatus.value,
         connectionState: connectionState.value,
+        iceGatheringState: pc?.iceGatheringState ?? null,
         relayOnly,
         wsReconnectAttempt: wsReconnectAttempt.value,
+        visibilityState: document.visibilityState,
+        userAgent: navigator.userAgent,
+        network: getNetworkInfo(),
         ...stats.value,
       });
     }, DEBUG_REPORT_INTERVAL_MS);
