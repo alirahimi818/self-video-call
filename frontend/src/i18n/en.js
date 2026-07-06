@@ -6,11 +6,17 @@ export const en = {
   createError: 'Could not create a call. Try again.',
   switchLanguage: 'فارسی',
 
+  statusStarting: 'Setting up your camera…',
   statusWaiting: 'Waiting for the other person to join…',
   statusConnected: 'Connected',
   statusPeerLeft: 'The other person left. Waiting for them to rejoin…',
   statusReconnecting: 'Connection trouble, reconnecting…',
   statusReconnectingAttempt: 'Connection trouble, reconnecting… (attempt {n})',
+
+  errorPermission: 'Camera/microphone access was denied. Check your browser permissions and reload.',
+  errorTimeout: 'Taking too long to start. Check your connection and reload.',
+  errorGeneric: 'Something went wrong starting the call. Please reload the page.',
+  reload: 'Reload',
 
   mute: 'Mute',
   unmute: 'Unmute',

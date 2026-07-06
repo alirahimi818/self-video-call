@@ -12,6 +12,8 @@ const VIDEO_CONSTRAINTS = {
 const STATS_INTERVAL_MS = 2500;
 const DEBUG_REPORT_INTERVAL_MS = 10_000;
 const VIDEO_MAX_BITRATE = 350_000;
+const GET_USER_MEDIA_TIMEOUT_MS = 15_000;
+const FETCH_ICE_SERVERS_TIMEOUT_MS = 10_000;
 
 function getNetworkInfo() {
   const conn = navigator.connection ?? navigator.mozConnection ?? navigator.webkitConnection;
@@ -19,10 +21,21 @@ function getNetworkInfo() {
   return { effectiveType: conn.effectiveType, downlink: conn.downlink, rtt: conn.rtt, saveData: conn.saveData };
 }
 
+// getUserMedia/fetch can hang indefinitely (a stuck permission prompt, a
+// network path that never errors, just never responds) with zero feedback —
+// the call start()s, nothing throws, nothing logs, the page just sits there.
+// Race against a timeout so a hang always turns into a visible, logged error.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
 export function useCall(roomId) {
   const localStream = shallowRef(null);
   const remoteStream = shallowRef(null);
-  const peerStatus = ref('waiting'); // waiting | connected | peer-left | reconnecting
+  const peerStatus = ref('starting'); // starting | waiting | connected | peer-left | reconnecting
   const connectionState = ref('new');
   const isMuted = ref(false);
   const isCameraOff = ref(false);
@@ -141,16 +154,35 @@ export function useCall(roomId) {
   }
 
   async function start() {
-    localStream.value = await navigator.mediaDevices.getUserMedia({
-      video: VIDEO_CONSTRAINTS,
-      audio: true,
-    });
+    // Logged before getUserMedia/fetchIceServers (which can hang or fail
+    // with zero other signal) specifically so a client that never gets any
+    // further still leaves a trace: "it reached the page and started, then
+    // nothing" is itself a useful diagnosis, and previously indistinguishable
+    // from "never loaded the page at all".
+    logEvent('call-attempt', { userAgent: navigator.userAgent, network: getNetworkInfo() });
+
+    try {
+      localStream.value = await withTimeout(
+        navigator.mediaDevices.getUserMedia({ video: VIDEO_CONSTRAINTS, audio: true }),
+        GET_USER_MEDIA_TIMEOUT_MS,
+        'getUserMedia',
+      );
+    } catch (err) {
+      logEvent('error', { context: 'getUserMedia', name: err?.name, message: String(err) });
+      throw err;
+    }
     const [videoTrack] = localStream.value.getVideoTracks();
     if (videoTrack) videoTrack.contentHint = 'motion';
 
-    ({ iceServers } = await fetchIceServers(roomId));
+    try {
+      ({ iceServers } = await withTimeout(fetchIceServers(roomId), FETCH_ICE_SERVERS_TIMEOUT_MS, 'fetchIceServers'));
+    } catch (err) {
+      logEvent('error', { context: 'fetchIceServers', message: String(err) });
+      throw err;
+    }
 
     logEvent('session-start', { userAgent: navigator.userAgent, network: getNetworkInfo() });
+    peerStatus.value = 'waiting';
 
     // signaling must exist before createPeerConnection() below: 'negotiationneeded'
     // and ICE candidates fire asynchronously and call signaling.send(), and if

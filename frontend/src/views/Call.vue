@@ -9,6 +9,7 @@ const { dir, t } = useI18n();
 const localVideo = ref(null);
 const remoteVideo = ref(null);
 const justCopied = ref(false);
+const startError = ref(null);
 
 const {
   localStream,
@@ -30,7 +31,14 @@ watch(remoteStream, (stream) => {
   if (remoteVideo.value) remoteVideo.value.srcObject = stream;
 });
 
-onMounted(start);
+onMounted(async () => {
+  try {
+    await start();
+  } catch (err) {
+    console.error('failed to start call', err);
+    startError.value = err;
+  }
+});
 
 function copyLink() {
   navigator.clipboard.writeText(window.location.href);
@@ -38,7 +46,14 @@ function copyLink() {
   setTimeout(() => (justCopied.value = false), 2000);
 }
 
+function errorMessageKey(err) {
+  if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') return 'errorPermission';
+  if (String(err?.message).includes('timed out')) return 'errorTimeout';
+  return 'errorGeneric';
+}
+
 const statusKey = {
+  starting: 'statusStarting',
   waiting: 'statusWaiting',
   connected: 'statusConnected',
   'peer-left': 'statusPeerLeft',
@@ -48,10 +63,21 @@ const statusKey = {
 
 <template>
   <div class="call" :dir="dir">
+    <div class="start-error" v-if="startError">
+      <p>{{ t(errorMessageKey(startError)) }}</p>
+      <button @click="() => location.reload()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="1 4 1 10 7 10" />
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+        </svg>
+        <span>{{ t('reload') }}</span>
+      </button>
+    </div>
+
     <video ref="remoteVideo" class="remote-video" autoplay playsinline></video>
     <video ref="localVideo" class="local-video" autoplay playsinline muted></video>
 
-    <div class="status-banner" v-if="peerStatus !== 'connected'">
+    <div class="status-banner" v-if="!startError && peerStatus !== 'connected'">
       {{
         peerStatus === 'reconnecting' && wsReconnectAttempt > 0
           ? t('statusReconnectingAttempt', { n: wsReconnectAttempt })
@@ -125,6 +151,38 @@ const statusKey = {
   height: 100%;
   object-fit: cover;
   background: #000;
+}
+
+.start-error {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1.5rem;
+  text-align: center;
+  background: #111;
+  color: white;
+}
+
+.start-error button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 1.2rem;
+  border-radius: 0.5rem;
+  border: none;
+  background: #2563eb;
+  color: white;
+  font-size: 0.9rem;
+}
+
+.start-error button svg {
+  width: 18px;
+  height: 18px;
 }
 
 .local-video {
