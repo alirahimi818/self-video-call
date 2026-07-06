@@ -12,6 +12,9 @@ export function useSignaling(roomId) {
   let attempt = 0;
   let closedByUser = false;
   let reconnectTimer = null;
+  // Callers (e.g. onnegotiationneeded) can fire before the handshake
+  // finishes; queue outbound messages instead of silently dropping them.
+  const outbox = [];
 
   function connect() {
     ws = new WebSocket(wsUrl(roomId));
@@ -19,6 +22,9 @@ export function useSignaling(roomId) {
     ws.addEventListener('open', () => {
       attempt = 0;
       status.value = 'open';
+      while (outbox.length > 0) {
+        ws.send(outbox.shift());
+      }
       events.dispatchEvent(new Event('open'));
     });
 
@@ -56,8 +62,11 @@ export function useSignaling(roomId) {
   }
 
   function send(data) {
+    const payload = JSON.stringify(data);
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data));
+      ws.send(payload);
+    } else {
+      outbox.push(payload);
     }
   }
 

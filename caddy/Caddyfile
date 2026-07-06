@@ -15,6 +15,15 @@
 
 	route {
 		root * /srv
+
+		# Vite content-hashes /assets/* filenames, so those are safe to cache
+		# hard. The HTML shell (and the SPA fallback target) must always be
+		# revalidated, or a stale index.html can keep pointing at a bundle
+		# that no longer exists / no longer has a given fix.
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+
 		try_files {path} /index.html
 		file_server
 	}
