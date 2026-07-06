@@ -1,14 +1,21 @@
 {$DOMAIN} {
 	encode gzip
 
-	@ws {
-		path /ws*
+	# Caddy reorders directives by a fixed internal priority regardless of
+	# file order (try_files would otherwise run before reverse_proxy and
+	# swallow /api and /ws into index.html). route{} forces literal,
+	# sequential evaluation instead.
+	route /api/* {
+		reverse_proxy node-service:8080
 	}
-	reverse_proxy @ws node-service:8080
 
-	reverse_proxy /api/* node-service:8080
+	route /ws* {
+		reverse_proxy node-service:8080
+	}
 
-	root * /srv
-	file_server
-	try_files {path} /index.html
+	route {
+		root * /srv
+		file_server
+		try_files {path} /index.html
+	}
 }
