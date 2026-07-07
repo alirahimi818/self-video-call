@@ -28,8 +28,3 @@ export function useI18n() {
 export function localePath(path, locale) {
   return locale === 'fa' ? `/fa${path}` : path;
 }
-
-// "Main link" / "Link 1 (Cloudflare)" — friendly name for a domains.js entry.
-export function domainLabel(t, entry) {
-  return entry.providerKey ? `${t(entry.labelKey)} (${t(entry.providerKey)})` : t(entry.labelKey);
-}

@@ -7,10 +7,8 @@ export const fa = {
   switchLanguage: 'English',
   altDomainsTitle: 'مشکل در اتصال داری؟ یکی از این‌ها رو امتحان کن:',
   domainMain: 'لینک اصلی',
-  domainLink1: 'لینک اول',
-  domainLink2: 'لینک دوم',
-  providerCloudflare: 'کلادفلر',
-  providerBunny: 'بانی',
+  domainLink1: 'لینک اول (کلودفلر)',
+  domainLink2: 'لینک دوم (بانی)',
 
   statusStarting: 'در حال آماده‌سازی دوربین…',
   statusWaiting: 'در انتظار پیوستن طرف مقابل…',

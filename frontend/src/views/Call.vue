@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue';
 import { useCall } from '../composables/useCall.js';
-import { useI18n, domainLabel } from '../i18n/index.js';
+import { useI18n } from '../i18n/index.js';
 import { DOMAINS } from '../domains.js';
 
 const props = defineProps({ uuid: { type: String, required: true } });
@@ -135,7 +135,7 @@ const statusKey = {
             <svg v-if="copiedDomain === entry.domain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
-            <span>{{ copiedDomain === entry.domain ? t('linkCopied') : domainLabel(t, entry) }}</span>
+            <span>{{ copiedDomain === entry.domain ? t('linkCopied') : t(entry.labelKey) }}</span>
           </button>
         </div>
         <button @click="showLinkMenu = !showLinkMenu" :aria-label="t('copyLink')">

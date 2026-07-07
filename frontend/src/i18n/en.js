@@ -7,10 +7,8 @@ export const en = {
   switchLanguage: 'فارسی',
   altDomainsTitle: 'Trouble connecting? Try one of these instead:',
   domainMain: 'Main link',
-  domainLink1: 'Link 1',
-  domainLink2: 'Link 2',
-  providerCloudflare: 'Cloudflare',
-  providerBunny: 'Bunny',
+  domainLink1: 'Link 1 (Cloudflare)',
+  domainLink2: 'Link 2 (Bunny)',
 
   statusStarting: 'Setting up your camera…',
   statusWaiting: 'Waiting for the other person to join…',

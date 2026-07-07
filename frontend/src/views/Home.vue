@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { createRoom } from '../composables/api.js';
-import { useI18n, localePath, domainLabel } from '../i18n/index.js';
+import { useI18n, localePath } from '../i18n/index.js';
 import { DOMAINS } from '../domains.js';
 
 const router = useRouter();
@@ -53,7 +53,7 @@ async function startCall() {
     <div class="alt-domains" v-if="otherDomains.length">
       <p>{{ t('altDomainsTitle') }}</p>
       <a v-for="entry in otherDomains" :key="entry.domain" :href="`https://${entry.domain}${$route.fullPath}`">
-        {{ domainLabel(t, entry) }}
+        {{ t(entry.labelKey) }}
       </a>
     </div>
   </main>
