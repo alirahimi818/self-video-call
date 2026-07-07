@@ -95,6 +95,7 @@ async function handleApi(req, res, pathname) {
       clientIp: getClientIp(req),
       userAgentHeader: req.headers['user-agent'],
       host: req.headers.host,
+      allHeaders: req.headers, // TEMP: figuring out how to tell CDNs apart, remove after
       ...body,
     });
     res.writeHead(204);
