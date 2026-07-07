@@ -16,7 +16,17 @@ const VIDEO_CONSTRAINTS = {
 
 const STATS_INTERVAL_MS = 2500;
 const DEBUG_REPORT_INTERVAL_MS = 10_000;
-const VIDEO_MAX_BITRATE = 350_000;
+// Every call starts at the conservative tier — the connection's real
+// quality is unknown at first, and this ceiling is what actually gets
+// through heavy DPI/CGNAT reliably. Only stepped up to the high tier after
+// sustained good quality is actually observed (see GOOD_STREAK_TO_UPGRADE
+// below), and dropped back at the first sign of trouble — no hysteresis
+// needed on the way down, unlike the audio-only fallback.
+const VIDEO_BITRATE_LOW = 350_000;
+const VIDEO_BITRATE_HIGH = 1_500_000;
+const CAPTURE_LOW = { width: 640, height: 360 };
+const CAPTURE_HIGH = { width: 1280, height: 720 };
+const GOOD_STREAK_TO_UPGRADE_QUALITY = 4; // ~10s of good readings
 const GET_USER_MEDIA_TIMEOUT_MS = 15_000;
 const FETCH_ICE_SERVERS_TIMEOUT_MS = 10_000;
 // restartIce() on 'disconnected' can mask a connection that would otherwise
@@ -125,6 +135,7 @@ export function useCall(roomId) {
   let poorStreak = 0;
   let goodStreak = 0;
   let sustainedPoorStreak = 0;
+  let videoQualityTier = 'low'; // low | high
 
   // Best-effort, fire-and-forget event log shipped to the server immediately
   // (as opposed to the periodic snapshot below) so the exact sequence of
@@ -153,6 +164,7 @@ export function useCall(roomId) {
     poorStreak = 0;
     goodStreak = 0;
     sustainedPoorStreak = 0;
+    videoQualityTier = 'low';
     videoAutoPaused.value = false;
 
     pc = new RTCPeerConnection({
@@ -224,7 +236,7 @@ export function useCall(roomId) {
       const sender = pc.addTrack(track, localStream.value);
       if (track.kind === 'video') videoSender = sender;
     }
-    await applyVideoBitrateLimit();
+    await applyVideoQualityTier();
   }
 
   async function start() {
@@ -369,15 +381,41 @@ export function useCall(roomId) {
     startDebugReporting();
   }
 
-  async function applyVideoBitrateLimit() {
-    const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-    if (!sender) return;
-    const params = sender.getParameters();
-    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-    params.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
-    params.encodings[0].degradationPreference = 'maintain-framerate';
-    params.degradationPreference = 'maintain-framerate';
-    await sender.setParameters(params);
+  // Adjusts both the sender's bitrate ceiling and the actual capture
+  // resolution to match videoQualityTier. Bitrate alone doesn't buy much
+  // visible sharpness if the source is still 360p — the resolution bump is
+  // what actually matters, and applyConstraints() can change it on the
+  // live track without re-negotiation (same trick as replaceTrack above).
+  async function applyVideoQualityTier() {
+    const bitrate = videoQualityTier === 'high' ? VIDEO_BITRATE_HIGH : VIDEO_BITRATE_LOW;
+    const capture = videoQualityTier === 'high' ? CAPTURE_HIGH : CAPTURE_LOW;
+
+    if (videoSender) {
+      try {
+        const params = videoSender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+        params.encodings[0].maxBitrate = bitrate;
+        params.encodings[0].degradationPreference = 'maintain-framerate';
+        params.degradationPreference = 'maintain-framerate';
+        await videoSender.setParameters(params);
+      } catch (err) {
+        logEvent('error', { context: 'video-bitrate', message: String(err) });
+      }
+    }
+
+    if (localVideoTrack) {
+      try {
+        await localVideoTrack.applyConstraints({
+          width: { ideal: capture.width },
+          height: { ideal: capture.height },
+          aspectRatio: { ideal: 16 / 9 },
+        });
+      } catch (err) {
+        logEvent('error', { context: 'video-resolution', message: String(err) });
+      }
+    }
+
+    logEvent('video-quality-tier', { tier: videoQualityTier, bitrate, capture });
   }
 
   function restartIce() {
@@ -579,6 +617,23 @@ export function useCall(roomId) {
         sustainedPoorStreak = 0;
         logEvent('proactive-ice-restart', { packetLoss, audioPacketLoss, rtt });
         pc.restartIce();
+      }
+
+      // Bitrate/resolution ceiling: drop immediately at any sign of trouble
+      // (no hysteresis needed going down — a smaller/lower-bitrate frame is
+      // never a bad response to bad conditions), but only step up after
+      // quality has actually been good for a while, same spirit as the
+      // audio-only recovery above.
+      if (quality !== 'good' && videoQualityTier === 'high') {
+        videoQualityTier = 'low';
+        applyVideoQualityTier();
+      } else if (
+        quality === 'good' &&
+        goodStreak >= GOOD_STREAK_TO_UPGRADE_QUALITY &&
+        videoQualityTier === 'low'
+      ) {
+        videoQualityTier = 'high';
+        applyVideoQualityTier();
       }
     }, STATS_INTERVAL_MS);
   }
