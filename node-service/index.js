@@ -191,7 +191,9 @@ wss.on('connection', (ws, req) => {
     let kind = 'unknown';
     try {
       const parsed = JSON.parse(raw);
-      kind = parsed.description?.type ?? (parsed.candidate ? 'candidate' : 'unknown');
+      kind =
+        parsed.description?.type ??
+        (parsed.candidate ? 'candidate' : parsed.qualityHint ? 'quality-hint' : 'unknown');
     } catch {
       // ignore — still relay raw below
     }

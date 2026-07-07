@@ -22,6 +22,24 @@ const FETCH_ICE_SERVERS_TIMEOUT_MS = 10_000;
 // for a 'failed' that may never come.
 const DISCONNECT_ESCALATION_THRESHOLD = 2;
 
+// Quality-based auto audio-only: stats poll every STATS_INTERVAL_MS (2.5s),
+// so these streak counts are roughly in seconds. Poor is a lower bar to
+// trigger than good is to recover — deliberate hysteresis so a call doesn't
+// flap video on/off right at the edge of a threshold; better to stay in
+// audio-only a few seconds too long than to bounce.
+const POOR_QUALITY_LOSS_PCT = 10;
+const POOR_QUALITY_RTT_MS = 600;
+const FAIR_QUALITY_LOSS_PCT = 3;
+const FAIR_QUALITY_RTT_MS = 300;
+const POOR_STREAK_TO_PAUSE_VIDEO = 3; // ~7.5s of poor readings
+const GOOD_STREAK_TO_RESUME_VIDEO = 5; // ~12.5s of good readings
+// If quality stays poor this long even while ICE reports 'connected', the
+// path itself has probably degraded (not just gone through a blip) — a
+// nominally-alive connection with terrible loss never triggers the
+// disconnect/failed handling above, so nothing else would ever try a fresh
+// ICE restart to look for a better path.
+const POOR_STREAK_TO_RESTART_ICE = 8; // ~20s
+
 function getNetworkInfo() {
   const conn = navigator.connection ?? navigator.mozConnection ?? navigator.webkitConnection;
   if (!conn) return null;
@@ -47,6 +65,8 @@ export function useCall(roomId) {
   const isMuted = ref(false);
   const isCameraOff = ref(false);
   const wsReconnectAttempt = ref(0);
+  const connectionQuality = ref('good'); // good | fair | poor — only meaningful once connected
+  const videoAutoPaused = ref(false);
   const stats = ref({
     candidateType: null,
     protocol: null,
@@ -78,6 +98,13 @@ export function useCall(roomId) {
   let seenCandidateTypes = new Set();
   let disconnectCount = 0;
   let lastAttemptedPairs = null;
+  let videoSender = null;
+  let localVideoTrack = null;
+  let localQualityPause = false; // we asked ourselves to stop sending video (our own bad quality)
+  let peerRequestedVideoPause = false; // the other side asked us to stop sending them video
+  let poorStreak = 0;
+  let goodStreak = 0;
+  let sustainedPoorStreak = 0;
 
   // Best-effort, fire-and-forget event log shipped to the server immediately
   // (as opposed to the periodic snapshot below) so the exact sequence of
@@ -98,6 +125,15 @@ export function useCall(roomId) {
   async function createPeerConnection() {
     if (pc) pc.close();
     seenCandidateTypes = new Set();
+    // A fresh connection gets a fresh read on quality — don't carry over an
+    // auto-pause decision (or its streak counters) made against the old,
+    // now-discarded path.
+    localQualityPause = false;
+    peerRequestedVideoPause = false;
+    poorStreak = 0;
+    goodStreak = 0;
+    sustainedPoorStreak = 0;
+    videoAutoPaused.value = false;
 
     pc = new RTCPeerConnection({
       iceServers,
@@ -162,8 +198,11 @@ export function useCall(roomId) {
       }
     };
 
+    videoSender = null;
+    localVideoTrack = localStream.value.getVideoTracks()[0] ?? null;
     for (const track of localStream.value.getTracks()) {
-      pc.addTrack(track, localStream.value);
+      const sender = pc.addTrack(track, localStream.value);
+      if (track.kind === 'video') videoSender = sender;
     }
     await applyVideoBitrateLimit();
   }
@@ -262,7 +301,18 @@ export function useCall(roomId) {
     });
 
     signaling.events.addEventListener('signal', async (event) => {
-      const { description, candidate } = event.detail;
+      const { description, candidate, qualityHint } = event.detail;
+      if (qualityHint) {
+        // The other side is asking us to stop (or resume) sending them
+        // video because of what THEY'RE seeing on their end — independent
+        // of our own local quality reading, both must allow video for it to
+        // actually flow. No renegotiation involved (replaceTrack doesn't
+        // trigger it), so this applies near-instantly.
+        logEvent('quality-hint-received', qualityHint);
+        peerRequestedVideoPause = !qualityHint.wantVideo;
+        applyVideoSendState();
+        return;
+      }
       try {
         if (description) {
           const offerCollision =
@@ -331,6 +381,38 @@ export function useCall(roomId) {
     }
   }
 
+  // 'poor'/'fair'/'good' from the same loss/RTT numbers already shown to
+  // nobody (no debug UI) — used here to drive auto audio-only and, for the
+  // UI, a simple traffic-light indicator instead of raw numbers.
+  function classifyQuality({ packetLoss, audioPacketLoss, rtt }) {
+    const loss = Math.max(packetLoss ?? 0, audioPacketLoss ?? 0);
+    const rttMs = rtt ?? 0;
+    if (loss > POOR_QUALITY_LOSS_PCT || rttMs > POOR_QUALITY_RTT_MS) return 'poor';
+    if (loss > FAIR_QUALITY_LOSS_PCT || rttMs > FAIR_QUALITY_RTT_MS) return 'fair';
+    return 'good';
+  }
+
+  function sendQualityHint(wantVideo) {
+    signaling?.send({ qualityHint: { wantVideo } });
+  }
+
+  // Video only actually flows if neither side asked for it to stop (our own
+  // bad quality, the peer's bad quality) and the user hasn't manually
+  // turned the camera off. replaceTrack(null)/back doesn't trigger
+  // renegotiation, so this takes effect immediately either way.
+  async function applyVideoSendState() {
+    if (!videoSender) return;
+    const shouldSend = !localQualityPause && !peerRequestedVideoPause && !isCameraOff.value;
+    const currentlySending = videoSender.track !== null;
+    if (shouldSend === currentlySending) return;
+    try {
+      await videoSender.replaceTrack(shouldSend ? localVideoTrack : null);
+    } catch (err) {
+      logEvent('error', { context: 'video-send-state', message: String(err) });
+    }
+    videoAutoPaused.value = localQualityPause || peerRequestedVideoPause;
+  }
+
   function toggleMute() {
     if (!localStream.value) return;
     isMuted.value = !isMuted.value;
@@ -345,6 +427,10 @@ export function useCall(roomId) {
     for (const track of localStream.value.getVideoTracks()) {
       track.enabled = !isCameraOff.value;
     }
+    // If quality auto-pause had already replaced the sender's track with
+    // null, just re-enabling the local track above wouldn't resume sending
+    // — the sender needs its track put back explicitly.
+    applyVideoSendState();
   }
 
   function startStatsPolling() {
@@ -419,6 +505,8 @@ export function useCall(roomId) {
         }
       });
 
+      const rtt = activePair.currentRoundTripTime != null ? Math.round(activePair.currentRoundTripTime * 1000) : null;
+
       stats.value = {
         candidateType: localCandidate?.candidateType ?? null,
         protocol: localCandidate?.protocol ?? null,
@@ -428,8 +516,50 @@ export function useCall(roomId) {
         inboundKbps,
         packetLoss,
         audioPacketLoss,
-        rtt: activePair.currentRoundTripTime != null ? Math.round(activePair.currentRoundTripTime * 1000) : null,
+        rtt,
       };
+
+      // Only judge quality once genuinely connected — 'checking'/'new' would
+      // otherwise look like packet loss and immediately (and pointlessly)
+      // trigger audio-only before the call ever really started.
+      if (connectionState.value !== 'connected' && connectionState.value !== 'completed') return;
+
+      const quality = classifyQuality({ packetLoss, audioPacketLoss, rtt });
+      connectionQuality.value = quality;
+
+      if (quality === 'poor') {
+        poorStreak += 1;
+        goodStreak = 0;
+        sustainedPoorStreak += 1;
+      } else if (quality === 'good') {
+        goodStreak += 1;
+        poorStreak = 0;
+        sustainedPoorStreak = 0;
+      } else {
+        // 'fair' is a neutral middle ground: not bad enough to keep pushing
+        // toward audio-only, not good enough to count toward recovery.
+        poorStreak = 0;
+        goodStreak = 0;
+        sustainedPoorStreak = 0;
+      }
+
+      if (poorStreak >= POOR_STREAK_TO_PAUSE_VIDEO && !localQualityPause) {
+        logEvent('video-auto-pause', { reason: 'local-quality', packetLoss, audioPacketLoss, rtt });
+        localQualityPause = true;
+        sendQualityHint(false);
+        applyVideoSendState();
+      } else if (goodStreak >= GOOD_STREAK_TO_RESUME_VIDEO && localQualityPause) {
+        logEvent('video-auto-resume', { reason: 'local-quality' });
+        localQualityPause = false;
+        sendQualityHint(true);
+        applyVideoSendState();
+      }
+
+      if (sustainedPoorStreak >= POOR_STREAK_TO_RESTART_ICE) {
+        sustainedPoorStreak = 0;
+        logEvent('proactive-ice-restart', { packetLoss, audioPacketLoss, rtt });
+        pc.restartIce();
+      }
     }, STATS_INTERVAL_MS);
   }
 
@@ -477,6 +607,8 @@ export function useCall(roomId) {
     isMuted,
     isCameraOff,
     wsReconnectAttempt,
+    connectionQuality,
+    videoAutoPaused,
     start,
     toggleMute,
     toggleCamera,

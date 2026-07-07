@@ -17,6 +17,11 @@ export const en = {
   statusReconnecting: 'Connection trouble, reconnecting…',
   statusReconnectingAttempt: 'Connection trouble, reconnecting… (attempt {n})',
 
+  qualityGood: 'Good connection',
+  qualityFair: 'Fair connection',
+  qualityPoor: 'Poor connection',
+  videoAutoPaused: 'Video paused to keep the call stable',
+
   errorPermission: 'Camera/microphone access was denied. Check your browser permissions and reload.',
   errorTimeout: 'Taking too long to start. Check your connection and reload.',
   errorGeneric: 'Something went wrong starting the call. Please reload the page.',

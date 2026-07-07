@@ -20,11 +20,19 @@ const {
   isMuted,
   isCameraOff,
   wsReconnectAttempt,
+  connectionQuality,
+  videoAutoPaused,
   start,
   toggleMute,
   toggleCamera,
   hangup,
 } = useCall(props.uuid);
+
+const qualityKey = {
+  good: 'qualityGood',
+  fair: 'qualityFair',
+  poor: 'qualityPoor',
+};
 
 watch(localStream, (stream) => {
   if (localVideo.value) localVideo.value.srcObject = stream;
@@ -89,6 +97,18 @@ const statusKey = {
           : t(statusKey[peerStatus])
       }}
     </div>
+
+    <div class="status-banner video-paused-banner" v-if="!startError && peerStatus === 'connected' && videoAutoPaused">
+      {{ t('videoAutoPaused') }}
+    </div>
+
+    <div
+      v-if="!startError && peerStatus === 'connected' && !videoAutoPaused"
+      class="quality-dot"
+      :class="connectionQuality"
+      :title="t(qualityKey[connectionQuality])"
+      :aria-label="t(qualityKey[connectionQuality])"
+    ></div>
 
     <div class="controls">
       <button @click="toggleMute" :class="{ active: isMuted }" :aria-label="isMuted ? t('unmute') : t('mute')">
@@ -230,6 +250,33 @@ const statusKey = {
   border-radius: 0.4rem;
   font-size: 0.85rem;
   z-index: 10;
+}
+
+.video-paused-banner {
+  background: rgba(180, 120, 0, 0.75);
+}
+
+.quality-dot {
+  position: absolute;
+  top: 0.9rem;
+  inset-inline-start: 0.9rem;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  z-index: 10;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.35);
+}
+
+.quality-dot.good {
+  background: #22c55e;
+}
+
+.quality-dot.fair {
+  background: #eab308;
+}
+
+.quality-dot.poor {
+  background: #ef4444;
 }
 
 .controls {
