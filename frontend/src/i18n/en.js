@@ -6,6 +6,11 @@ export const en = {
   createError: 'Could not create a call. Try again.',
   switchLanguage: 'فارسی',
   altDomainsTitle: 'Trouble connecting? Try one of these instead:',
+  domainMain: 'Main link',
+  domainLink1: 'Link 1',
+  domainLink2: 'Link 2',
+  providerCloudflare: 'Cloudflare',
+  providerBunny: 'Bunny',
 
   statusStarting: 'Setting up your camera…',
   statusWaiting: 'Waiting for the other person to join…',

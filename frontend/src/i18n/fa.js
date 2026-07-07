@@ -6,6 +6,11 @@ export const fa = {
   createError: 'ساخت تماس ممکن نشد. دوباره امتحان کن.',
   switchLanguage: 'English',
   altDomainsTitle: 'مشکل در اتصال داری؟ یکی از این‌ها رو امتحان کن:',
+  domainMain: 'لینک اصلی',
+  domainLink1: 'لینک اول',
+  domainLink2: 'لینک دوم',
+  providerCloudflare: 'کلادفلر',
+  providerBunny: 'بانی',
 
   statusStarting: 'در حال آماده‌سازی دوربین…',
   statusWaiting: 'در انتظار پیوستن طرف مقابل…',

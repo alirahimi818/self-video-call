@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue';
 import { useCall } from '../composables/useCall.js';
-import { useI18n } from '../i18n/index.js';
+import { useI18n, domainLabel } from '../i18n/index.js';
 import { DOMAINS } from '../domains.js';
 
 const props = defineProps({ uuid: { type: String, required: true } });
@@ -127,15 +127,15 @@ const statusKey = {
         <div class="link-menu-backdrop" v-if="showLinkMenu" @click="showLinkMenu = false"></div>
         <div class="link-menu" v-if="showLinkMenu">
           <button
-            v-for="domain in DOMAINS"
-            :key="domain"
+            v-for="entry in DOMAINS"
+            :key="entry.domain"
             class="link-menu-item"
-            @click="copyLinkFor(domain)"
+            @click="copyLinkFor(entry.domain)"
           >
-            <svg v-if="copiedDomain === domain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg v-if="copiedDomain === entry.domain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
-            <span>{{ copiedDomain === domain ? t('linkCopied') : domain }}</span>
+            <span>{{ copiedDomain === entry.domain ? t('linkCopied') : domainLabel(t, entry) }}</span>
           </button>
         </div>
         <button @click="showLinkMenu = !showLinkMenu" :aria-label="t('copyLink')">
@@ -285,13 +285,18 @@ const statusKey = {
 .link-menu {
   position: absolute;
   bottom: calc(100% + 0.5rem);
-  inset-inline-start: 50%;
+  /* Physical left+translateX, not inset-inline-start: centering within the
+     wrapper is a geometric operation, not a directional one — mixing a
+     logical offset with a physical transform put this off-center in RTL. */
+  left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.4rem;
-  min-width: 15rem;
+  width: max-content;
+  min-width: 12rem;
+  max-width: calc(100vw - 1.5rem);
   background: #222;
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 0.6rem;
@@ -310,7 +315,6 @@ const statusKey = {
   color: white;
   font-size: 0.85rem;
   text-align: start;
-  direction: ltr;
 }
 
 .link-menu-item:hover {

@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { createRoom } from '../composables/api.js';
-import { useI18n, localePath } from '../i18n/index.js';
+import { useI18n, localePath, domainLabel } from '../i18n/index.js';
 import { DOMAINS } from '../domains.js';
 
 const router = useRouter();
@@ -12,7 +12,7 @@ const error = ref('');
 
 // Shown so a user stuck on a broken/blocked link can try the others
 // themselves, instead of needing the URLs relayed over chat.
-const otherDomains = computed(() => DOMAINS.filter((domain) => domain !== window.location.hostname));
+const otherDomains = computed(() => DOMAINS.filter((entry) => entry.domain !== window.location.hostname));
 
 async function startCall() {
   isCreating.value = true;
@@ -52,8 +52,8 @@ async function startCall() {
 
     <div class="alt-domains" v-if="otherDomains.length">
       <p>{{ t('altDomainsTitle') }}</p>
-      <a v-for="domain in otherDomains" :key="domain" :href="`https://${domain}${$route.fullPath}`">
-        {{ domain }}
+      <a v-for="entry in otherDomains" :key="entry.domain" :href="`https://${entry.domain}${$route.fullPath}`">
+        {{ domainLabel(t, entry) }}
       </a>
     </div>
   </main>
