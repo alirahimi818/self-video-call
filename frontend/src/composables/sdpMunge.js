@@ -1,7 +1,7 @@
 // Force Opus DTX + a conservative average bitrate so audio survives even
 // when the link is too poor for video. Browsers don't expose these Opus
 // fmtp params through setParameters(), so we edit the SDP directly.
-export function mungeOpusFmtp(sdp, { maxaveragebitrate = 28000, usedtx = 1 } = {}) {
+export function mungeOpusFmtp(sdp, { maxaveragebitrate = 16000, usedtx = 1 } = {}) {
   const lines = sdp.split('\r\n');
   const opusRtpmap = lines.find((line) => /a=rtpmap:\d+ opus\/48000/i.test(line));
   if (!opusRtpmap) return sdp;
