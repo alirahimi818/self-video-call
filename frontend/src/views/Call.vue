@@ -289,10 +289,6 @@ const statusKey = {
   width: 30vw;
   max-width: 160px;
   z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
 }
 
 .local-video {
@@ -308,6 +304,10 @@ const statusKey = {
 }
 
 .orientation-toggle {
+  position: absolute;
+  bottom: 0.4rem;
+  left: 50%;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -316,8 +316,16 @@ const statusKey = {
   padding: 0;
   border-radius: 50%;
   border: none;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.5);
   color: white;
+  opacity: 0.55;
+  transition: opacity 0.15s, background-color 0.15s;
+}
+
+.local-video-wrapper:hover .orientation-toggle,
+.orientation-toggle:focus-visible {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .orientation-toggle svg {
