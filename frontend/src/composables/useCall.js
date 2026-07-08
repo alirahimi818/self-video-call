@@ -23,8 +23,10 @@ const DEBUG_REPORT_INTERVAL_MS = 10_000;
 // sustained good quality is actually observed (see GOOD_STREAK_TO_UPGRADE
 // below), and dropped back at the first sign of trouble — no hysteresis
 // needed on the way down, unlike the audio-only fallback.
+const VIDEO_BITRATE_VERY_LOW = 100_000;
 const VIDEO_BITRATE_LOW = 350_000;
 const VIDEO_BITRATE_HIGH = 1_500_000;
+const CAPTURE_VERY_LOW = { width: 320, height: 180 };
 const CAPTURE_LOW = { width: 640, height: 360 };
 const CAPTURE_HIGH = { width: 1280, height: 720 };
 const GOOD_STREAK_TO_UPGRADE_QUALITY = 4; // ~10s of good readings
@@ -47,7 +49,13 @@ const POOR_QUALITY_LOSS_PCT = 10;
 const POOR_QUALITY_RTT_MS = 600;
 const FAIR_QUALITY_LOSS_PCT = 3;
 const FAIR_QUALITY_RTT_MS = 300;
-const POOR_STREAK_TO_PAUSE_VIDEO = 3; // ~7.5s of poor readings
+// Poor quality steps the video tier down one notch at a time (high -> low ->
+// veryLow) before ever pausing video outright — a tiny, low-bitrate frame is
+// still something to look at, and buys more time for conditions to recover
+// on their own. Only pause once conditions are still poor after already
+// bottoming out at the lowest tier.
+const POOR_STREAK_TO_DOWNGRADE_TIER = 3; // ~7.5s of poor readings
+const POOR_STREAK_TO_PAUSE_VIDEO = 8; // ~20s of poor readings, only once already at veryLow
 const GOOD_STREAK_TO_RESUME_VIDEO = 5; // ~12.5s of good readings
 // If quality stays poor this long even while ICE reports 'connected', the
 // path itself has probably degraded (not just gone through a blip) — a
@@ -55,6 +63,23 @@ const GOOD_STREAK_TO_RESUME_VIDEO = 5; // ~12.5s of good readings
 // disconnect/failed handling above, so nothing else would ever try a fresh
 // ICE restart to look for a better path.
 const POOR_STREAK_TO_RESTART_ICE = 8; // ~20s
+
+// Chrome-only hint (silently a no-op elsewhere — feature-detected below) that
+// biases the receiver's jitter buffer target. Shrinking it under poor
+// quality only helps when the link is merely slow-but-steady (extra delay,
+// low jitter) — trading a bit of smoothness for noticeably less lag. On a
+// link that's also bursty (high jitter — packets arrive in clumps, not a
+// steady trickle), a small buffer instead starves between bursts and audio
+// plays in chunks with gaps, which is worse than the delay it was meant to
+// fix. So the choice is driven by measured jitter, not just loss/RTT: low
+// jitter -> shrink the buffer; high jitter -> grow it past normal instead,
+// to actually absorb the burstiness. Same streak thresholds/hysteresis as
+// the video pause below, so this and the audio-only fallback move together
+// rather than flapping independently.
+const PLAYOUT_DELAY_LOW_S = 0.1;
+const PLAYOUT_DELAY_NORMAL_S = 0.4;
+const PLAYOUT_DELAY_HIGH_JITTER_S = 0.6;
+const AUDIO_JITTER_HIGH_THRESHOLD_S = 0.05; // 50ms — above this, prefer a bigger buffer over a smaller one
 
 function getNetworkInfo() {
   const conn = navigator.connection ?? navigator.mozConnection ?? navigator.webkitConnection;
@@ -123,6 +148,12 @@ export function useCall(roomId) {
   let makingOffer = false;
   let ignoreOffer = false;
   let relayOnly = false;
+  // UDP always wins over TCP/TLS TURN candidates by ICE priority as long as
+  // it establishes at all — even at 80% packet loss. TCP retransmits instead
+  // of dropping, trading more latency for no more connect/disconnect
+  // flapping, which is the better trade on a link this lossy. Only escalate
+  // here once relay-only alone hasn't been enough.
+  let forceTcpRelay = false;
   let statsTimer = null;
   let debugTimer = null;
   let lastStats = null;
@@ -137,6 +168,7 @@ export function useCall(roomId) {
   let goodStreak = 0;
   let sustainedPoorStreak = 0;
   let videoQualityTier = 'low'; // low | high
+  let audioBufferMode = 'normal'; // normal | low | high-jitter
 
   // Best-effort, fire-and-forget event log shipped to the server immediately
   // (as opposed to the periodic snapshot below) so the exact sequence of
@@ -167,9 +199,10 @@ export function useCall(roomId) {
     sustainedPoorStreak = 0;
     videoQualityTier = 'low';
     videoAutoPaused.value = false;
+    audioBufferMode = 'normal';
 
     pc = new RTCPeerConnection({
-      iceServers,
+      iceServers: forceTcpRelay ? iceServers.filter((s) => !s.urls.includes('transport=udp')) : iceServers,
       iceTransportPolicy: relayOnly ? 'relay' : 'all',
     });
 
@@ -178,11 +211,12 @@ export function useCall(roomId) {
       for (const track of event.streams[0]?.getTracks() ?? [event.track]) {
         remoteStream.value.addTrack(track);
       }
+      applyPlayoutDelayHint();
     };
 
     pc.oniceconnectionstatechange = () => {
       connectionState.value = pc.iceConnectionState;
-      logEvent('ice-state', { state: pc.iceConnectionState, relayOnly });
+      logEvent('ice-state', { state: pc.iceConnectionState, relayOnly, forceTcpRelay });
 
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         peerStatus.value = 'connected';
@@ -390,8 +424,10 @@ export function useCall(roomId) {
   // what actually matters, and applyConstraints() can change it on the
   // live track without re-negotiation (same trick as replaceTrack above).
   async function applyVideoQualityTier() {
-    const bitrate = videoQualityTier === 'high' ? VIDEO_BITRATE_HIGH : VIDEO_BITRATE_LOW;
-    const capture = videoQualityTier === 'high' ? CAPTURE_HIGH : CAPTURE_LOW;
+    const bitrate =
+      videoQualityTier === 'high' ? VIDEO_BITRATE_HIGH : videoQualityTier === 'low' ? VIDEO_BITRATE_LOW : VIDEO_BITRATE_VERY_LOW;
+    const capture =
+      videoQualityTier === 'high' ? CAPTURE_HIGH : videoQualityTier === 'low' ? CAPTURE_LOW : CAPTURE_VERY_LOW;
 
     if (videoSender) {
       try {
@@ -421,6 +457,25 @@ export function useCall(roomId) {
     logEvent('video-quality-tier', { tier: videoQualityTier, bitrate, capture });
   }
 
+  // Applies the current audioBufferMode to every receiver right now — called
+  // both when the mode toggles and when a new receiver shows up (ontrack),
+  // since a receiver that arrives mid-call while already in a non-default
+  // mode otherwise starts out on the browser's default target.
+  function applyPlayoutDelayHint() {
+    if (!pc) return;
+    const hint =
+      audioBufferMode === 'low'
+        ? PLAYOUT_DELAY_LOW_S
+        : audioBufferMode === 'high-jitter'
+          ? PLAYOUT_DELAY_HIGH_JITTER_S
+          : PLAYOUT_DELAY_NORMAL_S;
+    for (const receiver of pc.getReceivers()) {
+      if (receiver.track?.kind === 'audio' && 'playoutDelayHint' in receiver) {
+        receiver.playoutDelayHint = hint;
+      }
+    }
+  }
+
   function restartIce() {
     if (!pc || pc.signalingState === 'closed') return;
     peerStatus.value = 'reconnecting';
@@ -437,6 +492,16 @@ export function useCall(roomId) {
       disconnectCount = 0;
       peerStatus.value = 'reconnecting';
       createPeerConnection().catch((err) => logEvent('error', { context: 'relay-fallback', message: String(err) }));
+    } else if (!forceTcpRelay) {
+      // Already relay-only and still flapping — the UDP relay path itself
+      // is the problem (lossy, not blocked), so drop it from the candidate
+      // set entirely and force TCP/TLS relay, which absorbs loss as delay
+      // instead of repeated disconnects.
+      logEvent('tcp-relay-fallback-triggered', { reason });
+      forceTcpRelay = true;
+      disconnectCount = 0;
+      peerStatus.value = 'reconnecting';
+      createPeerConnection().catch((err) => logEvent('error', { context: 'tcp-relay-fallback', message: String(err) }));
     } else {
       restartIce();
     }
@@ -535,6 +600,7 @@ export function useCall(roomId) {
       let inboundKbps = 0;
       let packetLoss = null;
       let audioPacketLoss = null;
+      let audioJitter = null;
       report.forEach((entry) => {
         if (entry.type === 'outbound-rtp' && entry.kind === 'video') {
           if (lastStats?.outbound) {
@@ -563,6 +629,7 @@ export function useCall(roomId) {
             const total = entry.packetsLost + entry.packetsReceived;
             audioPacketLoss = total > 0 ? Math.round((entry.packetsLost / total) * 1000) / 10 : 0;
           }
+          if (entry.jitter != null) audioJitter = entry.jitter; // seconds, per spec
         }
       });
 
@@ -604,7 +671,10 @@ export function useCall(roomId) {
         sustainedPoorStreak = 0;
       }
 
-      if (poorStreak >= POOR_STREAK_TO_PAUSE_VIDEO && !localQualityPause) {
+      // Pausing video entirely is the last resort — only once quality is
+      // still poor after already having stepped all the way down to the
+      // smallest/cheapest tier below.
+      if (poorStreak >= POOR_STREAK_TO_PAUSE_VIDEO && videoQualityTier === 'veryLow' && !localQualityPause) {
         logEvent('video-auto-pause', { reason: 'local-quality', packetLoss, audioPacketLoss, rtt });
         localQualityPause = true;
         sendQualityHint(false);
@@ -616,25 +686,45 @@ export function useCall(roomId) {
         applyVideoSendState();
       }
 
+      if (poorStreak >= POOR_STREAK_TO_DOWNGRADE_TIER) {
+        // Bursty (high-jitter) link: a smaller buffer starves between
+        // bursts and audio plays in choppy chunks — grow the buffer
+        // instead. Steady-but-slow link (low jitter, just plain delay):
+        // shrinking it actually cuts lag without adding choppiness.
+        const nextMode = audioJitter != null && audioJitter > AUDIO_JITTER_HIGH_THRESHOLD_S ? 'high-jitter' : 'low';
+        if (audioBufferMode !== nextMode) {
+          audioBufferMode = nextMode;
+          applyPlayoutDelayHint();
+          logEvent('audio-buffer-mode', { mode: nextMode, packetLoss, audioPacketLoss, audioJitter, rtt });
+        }
+      } else if (goodStreak >= GOOD_STREAK_TO_RESUME_VIDEO && audioBufferMode !== 'normal') {
+        audioBufferMode = 'normal';
+        applyPlayoutDelayHint();
+        logEvent('audio-buffer-mode', { mode: 'normal' });
+      }
+
       if (sustainedPoorStreak >= POOR_STREAK_TO_RESTART_ICE) {
         sustainedPoorStreak = 0;
         logEvent('proactive-ice-restart', { packetLoss, audioPacketLoss, rtt });
         pc.restartIce();
       }
 
-      // Bitrate/resolution ceiling: drop immediately at any sign of trouble
-      // (no hysteresis needed going down — a smaller/lower-bitrate frame is
-      // never a bad response to bad conditions), but only step up after
-      // quality has actually been good for a while, same spirit as the
-      // audio-only recovery above.
-      if (quality !== 'good' && videoQualityTier === 'high') {
+      // Bitrate/resolution ceiling: step down one tier at a time once poor
+      // quality has persisted for a bit (immediate on the way down would
+      // otherwise blow through the low tier and go straight to pausing
+      // video, skipping the point of having a veryLow tier at all). Only
+      // step back up after quality has actually been good for a while, same
+      // spirit as the audio-only recovery above.
+      if (poorStreak >= POOR_STREAK_TO_DOWNGRADE_TIER && videoQualityTier === 'high') {
         videoQualityTier = 'low';
         applyVideoQualityTier();
-      } else if (
-        quality === 'good' &&
-        goodStreak >= GOOD_STREAK_TO_UPGRADE_QUALITY &&
-        videoQualityTier === 'low'
-      ) {
+      } else if (poorStreak >= POOR_STREAK_TO_DOWNGRADE_TIER && videoQualityTier === 'low') {
+        videoQualityTier = 'veryLow';
+        applyVideoQualityTier();
+      } else if (quality === 'good' && goodStreak >= GOOD_STREAK_TO_UPGRADE_QUALITY && videoQualityTier === 'veryLow') {
+        videoQualityTier = 'low';
+        applyVideoQualityTier();
+      } else if (quality === 'good' && goodStreak >= GOOD_STREAK_TO_UPGRADE_QUALITY && videoQualityTier === 'low') {
         videoQualityTier = 'high';
         applyVideoQualityTier();
       }
@@ -655,6 +745,7 @@ export function useCall(roomId) {
         connectionState: connectionState.value,
         iceGatheringState: pc?.iceGatheringState ?? null,
         relayOnly,
+        forceTcpRelay,
         wsReconnectAttempt: wsReconnectAttempt.value,
         visibilityState: document.visibilityState,
         userAgent: navigator.userAgent,
